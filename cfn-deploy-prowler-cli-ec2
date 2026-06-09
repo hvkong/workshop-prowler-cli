@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Prowler CLI Workshop - EC2 instance with Session Manager access, dashboard exposed on port 11666, and S3 bucket for report export.
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: ''
+    Description: S3 bucket name for Prowler report uploads. Leave empty to use default (<account-id>-prowler-output).
+
+  IAMRoleName:
+    Type: String
+    Default: prowler-ec2-cli
+    Description: Name of the IAM role attached to the EC2 instance.
+
+  SecurityGroupName:
+    Type: String
+    Default: prowler-ec2-cli-sg
+    Description: Name of the security group for the EC2 instance.
+
+  EC2InstanceName:
+    Type: String
+    Default: prowler-ec2-cli
+    Description: Name tag for the EC2 instance.
+
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    Description: EC2 instance type.
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: >-
+      VPC for the security group. IMPORTANT: This must be the same VPC that the subnet below belongs to.
+      The security group requires an explicit VPC ID, while the EC2 instance uses the subnet.
+      If these don't match, the stack will fail.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: >-
+      Public subnet where the EC2 instance will be launched. Must be in the same VPC selected above
+      and must have "Auto-assign public IPv4 address" enabled (or use an Elastic IP).
+
+  DashboardCIDR:
+    Type: String
+    Default: '0.0.0.0/0'
+    Description: CIDR range allowed to access the dashboard on port 11666. Restrict to your workshop network for security.
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Latest Amazon Linux 2023 AMI (resolved automatically via SSM parameter).
+
+Conditions:
+  UseDefaultBucketName: !Equals [!Ref S3BucketName, '']
+
+Resources:
+
+  # --- S3 Bucket for report export ---
+  ReportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If
+        - UseDefaultBucketName
+        - !Sub '${AWS::AccountId}-prowler-output'
+        - !Ref S3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # --- IAM Role ---
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref IAMRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/job-function/ViewOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ProwlerS3Upload
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowUploadToWorkshopBucket
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${ReportBucket.Arn}/reports/*'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # --- Security Group ---
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Ref SecurityGroupName
+      GroupDescription: Prowler Workshop - allows dashboard access on port 11666
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 11666
+          ToPort: 11666
+          CidrIp: !Ref DashboardCIDR
+          Description: Prowler Dashboard access
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+          Description: Allow all outbound traffic
+
+  # --- EC2 Instance ---
+  WorkshopInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Ref EC2InstanceName
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          # Install Python 3.12
+          dnf install -y python3.12 python3.12-pip
+
+          # Install Prowler system-wide
+          pip3.12 install prowler
+
+          # Patch dashboard to bind to 0.0.0.0
+          DASHBOARD_INIT=$(python3.12 -c "import dashboard; import os; print(os.path.dirname(dashboard.__file__))")/__init__.py
+          sed -i 's/DASHBOARD_ARGS = {"debug"/DASHBOARD_ARGS = {"host": "0.0.0.0", "debug"/' "$DASHBOARD_INIT"
+
+          # Create Documents directory for ssm-user (will be created by SSM agent on first connect)
+          mkdir -p /home/ssm-user/Documents
+          
+          # Ensure ssm-user owns the directory if the user already exists
+          id ssm-user &>/dev/null && chown -R ssm-user:ssm-user /home/ssm-user/Documents
+
+          # Signal completion
+          touch /home/ssm-user/.prowler-setup-complete
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID (use this to connect via Session Manager)
+    Value: !Ref WorkshopInstance
+
+  PublicIP:
+    Description: Public IP of the EC2 instance
+    Value: !GetAtt WorkshopInstance.PublicIp
+
+  DashboardURL:
+    Description: URL to access the Prowler Dashboard (after running a scan and starting the dashboard)
+    Value: !Sub 'http://${WorkshopInstance.PublicIp}:11666'
+
+  S3BucketOutput:
+    Description: S3 bucket for uploading reports
+    Value: !Ref ReportBucket
+
+  S3UploadCommand:
+    Description: Command to upload reports to S3
+    Value: !Sub 'aws s3 cp /home/ssm-user/Documents/output/ s3://${ReportBucket}/reports/ --recursive'
+
+  SessionManagerCommand:
+    Description: Connect via Session Manager (AWS Console)
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${WorkshopInstance}?region=${AWS::Region}'
