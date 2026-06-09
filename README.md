@@ -153,7 +153,7 @@ If you're running this workshop on an EC2 instance and need attendees to access 
 
 ### Connect to the Instance
 
-No SSH needed. Use Session Manager:
+Use Session Manager:
 
 1. Go to **EC2 > Instances > Select instance > Connect**
 2. Choose **Session Manager** tab
@@ -180,9 +180,9 @@ prowler --version
 ### Run the Scan
 
 ```bash
-mkdir -p ~/Documents
-cd ~/Documents
-prowler aws --services s3 iam --output-formats csv json-ocsf html
+mkdir -p /home/ssm-user/Documents
+cd /home/ssm-user/Documents
+prowler aws --services s3 iam --severity critical high
 ```
 
 The instance's IAM role provides the AWS credentials automatically — no `aws login` needed on the EC2 instance.
@@ -204,7 +204,7 @@ sed -i 's/DASHBOARD_ARGS = {"debug"/DASHBOARD_ARGS = {"host": "0.0.0.0", "debug"
 Then launch the dashboard normally:
 
 ```bash
-cd ~/Documents
+cd /home/ssm-user/Documents
 prowler dashboard
 ```
 
