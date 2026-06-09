@@ -180,20 +180,18 @@ prowler --version
 ### Run the Scan
 
 ```bash
-cd /home/ssm-user/
-mkdir Documents
-prowler aws --services s3 iam --severity critical high
+mkdir -p ~/Documents
+cd ~/Documents
+prowler aws --services s3 iam --output-formats csv json-ocsf html
 ```
 
-The instance's IAM role provides the AWS credentials automatically — no `aws configure` needed on the EC2 instance.
+The instance's IAM role provides the AWS credentials automatically — no `aws login` needed on the EC2 instance.
 
 ### Launch the Dashboard (with external access)
 
 By default, `prowler dashboard` binds to `127.0.0.1` (localhost only), so external browsers cannot reach it. Since Prowler's CLI does not currently expose a `--host` flag for the dashboard, a workaround is needed.
 
-Below are two options. Choose one.
-
-#### Workaround A: Patch the Prowler dashboard binding (recommended)
+#### Workaround: Patch the Prowler dashboard binding
 
 This modifies the installed Prowler package to bind the dashboard to all network interfaces (`0.0.0.0`) instead of localhost only. It's a one-time change that persists for the life of the instance.
 
@@ -206,38 +204,11 @@ sed -i 's/DASHBOARD_ARGS = {"debug"/DASHBOARD_ARGS = {"host": "0.0.0.0", "debug"
 Then launch the dashboard normally:
 
 ```bash
-cd /home/ssm-user/Documents
+cd ~/Documents
 prowler dashboard
 ```
 
 > **Note:** This is a workaround that modifies Prowler's installed code. It changes the dashboard to accept connections from any network interface rather than localhost only. This is safe for a workshop environment but should not be done on a shared or production system without understanding the security implications.
-
-#### Workaround B: Use socat as a port forwarder
-
-This leaves Prowler completely untouched. Instead, `socat` forwards external traffic on port 11666 to the dashboard's localhost binding.
-
-```bash
-# Install socat
-sudo dnf install -y socat
-
-# Start the port forwarder in the background
-socat TCP-LISTEN:11666,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:11666 &
-```
-
-Then launch the dashboard on a different port (since socat is already listening on 11666, or use the same port with socat forwarding):
-
-```bash
-cd /home/ssm-user/Documents
-prowler dashboard
-```
-
-> **How this works:** Prowler dashboard starts on `127.0.0.1:11666` as usual. `socat` listens on `0.0.0.0:11666` and forwards incoming external connections to `127.0.0.1:11666`. Since both try to use port 11666, you need to start socat first — it will bind to the external interface while Prowler binds to localhost. This works because they bind to different interfaces.
->
-> **Note:** If `socat` conflicts with Prowler on the same port, use a different external port:
-> ```bash
-> socat TCP-LISTEN:8080,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:11666 &
-> ```
-> Then attendees access `http://<instance-ip>:8080` instead (and update your security group accordingly).
 
 ### Access the Dashboard
 
@@ -278,7 +249,7 @@ This only grants permission to upload objects under the `reports/` prefix in tha
 #### Upload the report
 
 ```bash
-aws s3 cp /home/ssm-user/Documents/output/ s3://YOUR-BUCKET-NAME/reports/ --recursive
+aws s3 cp ~/Documents/output/ s3://YOUR-BUCKET-NAME/reports/ --recursive
 ```
 
 Attendees can then navigate to the S3 console, open the bucket, and download their files from there.
@@ -300,8 +271,8 @@ Attendees can then navigate to the S3 console, open the bucket, and download the
 | Issue | Solution |
 |-------|----------|
 | `prowler: command not found` | Ensure Python scripts directory is in PATH (see Step 1 note) |
-| `aws sts get-caller-identity` fails | AWS CLI not configured — run `aws configure` or check your credentials file |
+| `aws sts get-caller-identity` fails | AWS CLI not authenticated — run `aws login` and follow the browser prompt |
 | Scan returns no findings | Verify AWS credentials have `SecurityAudit` and `ViewOnlyAccess` policies |
 | Dashboard shows "no data" | Ensure CSV files exist in the `output/` directory and you launched the dashboard from the same directory |
-| Dashboard not reachable on EC2 | Check security group has port 11666 open; verify the binding patch was applied (Workaround A) or socat is running (Workaround B) |
+| Dashboard not reachable on EC2 | Check security group has port 11666 open; verify the binding patch was applied by running: `grep "0.0.0.0" "$DASHBOARD_INIT"` |
 | Session Manager won't connect | Ensure IAM role includes `AmazonSSMManagedInstanceCore` and instance has internet access |
