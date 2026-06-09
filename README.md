@@ -119,7 +119,7 @@ The dashboard reads CSV files from the default `output/` folder relative to wher
 
 ---
 
-## Step 5b: Dashboard Port Binding (EC2 / Remote Server Only)
+## Step 5a: Dashboard Port Binding (EC2 / Remote Server Only)
 
 | Linux (EC2 or remote) | Windows | macOS |
 |------------------------|---------|-------|
